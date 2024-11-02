@@ -6,8 +6,6 @@ const { validateUser } = require("./utils/validation");
 const bcrypt = require("bcrypt");
 const saltRounds = 10;
 const cookieParser = require("cookie-parser");
-const jwt = require("jsonwebtoken");
-const SECRET_KEY = "NodeJS_Practise";
 const { userAuth } = require("./middlewares/auth");
 
 //Middlewares
@@ -40,10 +38,12 @@ app.post("/login", async (req, res) => {
     if (!user) {
       throw new Error("Email id doesn't exists");
     }
-    const isPasswordValid = await bcrypt.compare(password, user.password);
+    const isPasswordValid = await user.validatePassword(password);
     if (isPasswordValid) {
-      const token = jwt.sign({ id: user._id }, SECRET_KEY);
-      res.cookie("token", token);
+      const token = await user.getJWT();
+      res.cookie("token", token, {
+        expires: new Date(Date.now() + 7 * 24 * 360000), // 7 days
+      });
       res.status(200).send("User logged in successfully!");
     } else {
       throw new Error("Password is not correct");
@@ -54,20 +54,9 @@ app.post("/login", async (req, res) => {
 });
 
 // READ - Get User Profile (PROTECTED)
-app.get("/profile", async (req, res) => {
+app.get("/profile", userAuth, async (req, res) => {
   try {
-    const cookies = req.cookies;
-    const { token } = cookies;
-    if (!token) {
-      throw new Error("Invalid token");
-    }
-    const decoded = jwt.verify(token, SECRET_KEY);
-    console.log(decoded);
-    const { id: userId } = decoded;
-    const user = await User.findById(userId);
-    if (!user) {
-      throw new Error("User not found");
-    }
+    const { user } = req;
     res.send(user);
   } catch (error) {
     res.status(400).send("Error: " + error.message);
