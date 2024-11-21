@@ -49,6 +49,7 @@ router.get("/users/:id", async (req, res) => {
 // UPDATE - Update a user by ID
 router.put("/users/:id", async (req, res) => {
   try {
+    validateUser(req);
     const user = await User.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
       runValidators: true,
@@ -65,6 +66,7 @@ router.put("/users/:id", async (req, res) => {
 // PATCH - Partially update a user by ID
 router.patch("/users/:id", async (req, res) => {
   try {
+    validateUser(req);
     const user = await User.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
       runValidators: true,
