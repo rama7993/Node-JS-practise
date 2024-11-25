@@ -3,38 +3,45 @@ const router = express.Router();
 const { userAuth } = require("../middlewares/auth");
 const ConnectionRequest = require("../models/connection-request");
 const User = require("../models/user");
+const mongoose = require("mongoose");
 
-const USER_SAFE_DATA = ["firstName", "lastName", " gender", "bio", "skills"];
+const USER_SAFE_DATA = ["firstName", "lastName", "gender", "bio", "skills"];
+const ALLOWED_STATUSES = ["interested", "ignore"];
+const REVIEW_STATUSES = ["accept", "reject"];
 
-// Sends or updates a connection request ("interested" or "ignore") to another user.
+// Helper to validate ObjectId
+const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+// Sends or updates a connection request
 router.post("/send/:status/:toUserId", userAuth, async (req, res) => {
   const { user } = req;
-  try {
-    const fromUserId = user._id;
-    const toUserId = req.params.toUserId;
-    const status = req.params.status;
+  const fromUserId = user._id;
+  const { status, toUserId } = req.params;
 
-    // Validate the status
-    const allowedStatuses = ["interested", "ignore"];
-    if (!allowedStatuses.includes(status)) {
+  try {
+    // Validate ObjectId
+    if (!isValidObjectId(toUserId)) {
+      return res.status(400).json({ message: "Invalid user ID." });
+    }
+
+    // Validate status
+    if (!ALLOWED_STATUSES.includes(status)) {
       return res.status(400).json({
-        message: `Invalid status: ${status}`,
+        message: `Invalid status: '${status}'. Allowed statuses are: ${ALLOWED_STATUSES.join(
+          ", "
+        )}.`,
       });
     }
 
-    // Check if a connection request already exists
+    // Check existing connection request
     const existingRequest = await ConnectionRequest.findOne({
       $or: [
         { fromUserId, toUserId },
-        {
-          fromUserId: toUserId,
-          toUserId: fromUserId,
-        },
+        { fromUserId: toUserId, toUserId: fromUserId },
       ],
     });
 
     if (existingRequest) {
-      // Prevent redundant actions or conflicting updates
       if (existingRequest.status === status) {
         return res.status(400).json({
           message: `Request already marked as '${status}'.`,
@@ -45,16 +52,22 @@ router.post("/send/:status/:toUserId", userAuth, async (req, res) => {
           message: "Cannot send 'interested' request after ignoring.",
         });
       }
-      // Update the status if it exists
+      // Update existing request
       existingRequest.status = status;
       const updatedRequest = await existingRequest.save();
       return res.json({
-        message: `Request updated to '${status}'.`,
+        message: `Request status updated to '${status}'.`,
         data: updatedRequest,
       });
     }
 
-    // Create a new connection request
+    // Fetch the toUser details
+    const toUser = await User.findById(toUserId, "firstName");
+    if (!toUser) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    // Create new connection request
     const connectionRequest = new ConnectionRequest({
       fromUserId,
       toUserId,
@@ -62,35 +75,36 @@ router.post("/send/:status/:toUserId", userAuth, async (req, res) => {
     });
 
     const data = await connectionRequest.save();
-
     res.json({
-      message: `${user.firstName} is ${status} to ${toUserId}`,
+      message: `${user.firstName} is ${status} to ${toUser.firstName}`,
       data,
     });
   } catch (error) {
     console.error("Error:", error);
-    res.status(500).json({
-      message: "Error occurred",
-      error: error.message,
-    });
+    res.status(500).json({ message: "Error occurred", error: error.message });
   }
 });
 
-// Allows reviewing and updating a connection request (accept or reject).
+// Allows reviewing and updating a connection request
 router.post("/review/:status/:requestedUserId", userAuth, async (req, res) => {
   const { user } = req;
-  try {
-    const fromUserId = req.params.requestedUserId;
-    const toUserId = user._id;
-    const status = req.params.status;
+  const { status, requestedUserId } = req.params;
 
-    // Validate the status
-    const allowedStatuses = ["accept", "reject"];
-    if (!allowedStatuses.includes(status)) {
-      return res.status(400).json({
-        message: `Invalid review status: ${status}`,
-      });
+  try {
+    // Validate ObjectId
+    if (!isValidObjectId(requestedUserId)) {
+      return res.status(400).json({ message: "Invalid user ID." });
     }
+
+    // Validate status
+    if (!REVIEW_STATUSES.includes(status)) {
+      return res
+        .status(400)
+        .json({ message: `Invalid review status: ${status}` });
+    }
+
+    const fromUserId = requestedUserId;
+    const toUserId = user._id;
 
     // Find the "interested" request
     const existingRequest = await ConnectionRequest.findOne({
@@ -105,7 +119,6 @@ router.post("/review/:status/:requestedUserId", userAuth, async (req, res) => {
       });
     }
 
-    // Update the status of the request
     existingRequest.status = status;
     const updatedRequest = await existingRequest.save();
 
@@ -115,15 +128,12 @@ router.post("/review/:status/:requestedUserId", userAuth, async (req, res) => {
     });
   } catch (error) {
     console.error("Error:", error);
-    res.status(500).json({
-      message: "Error occurred",
-      error: error.message,
-    });
+    res.status(500).json({ message: "Error occurred", error: error.message });
   }
 });
 
-// Fetches incoming "interested" connection requests for review.
-router.get("/received", userAuth, async (req, res) => {
+// Fetch incoming "interested" connection requests for review
+router.get("/received/incoming", userAuth, async (req, res) => {
   const { user } = req;
   try {
     const connectionRequests = await ConnectionRequest.find({
@@ -132,23 +142,38 @@ router.get("/received", userAuth, async (req, res) => {
     }).populate("fromUserId", USER_SAFE_DATA);
 
     res.json({
-      message: "Requests received fetched successfully",
+      message: "Incoming connection requests fetched successfully",
       data: connectionRequests,
     });
   } catch (error) {
     console.error("Error:", error);
-    res.status(500).json({
-      message: "Error occurred",
-      error: error.message,
-    });
+    res.status(500).json({ message: "Error occurred", error: error.message });
   }
 });
 
-// Fetches all accepted connections for the current user.
+// Fetch outgoing "interested" connection requests for review
+router.get("/received/outgoing", userAuth, async (req, res) => {
+  const { user } = req;
+  try {
+    const connectionRequests = await ConnectionRequest.find({
+      fromUserId: user._id,
+      status: "interested",
+    }).populate("toUserId", USER_SAFE_DATA);
+
+    res.json({
+      message: "Outgoing connection requests fetched successfully",
+      data: connectionRequests,
+    });
+  } catch (error) {
+    console.error("Error:", error);
+    res.status(500).json({ message: "Error occurred", error: error.message });
+  }
+});
+
+// Fetches all accepted connections for the current user
 router.get("/connections", userAuth, async (req, res) => {
   const { user } = req;
   try {
-    const loggedInUser = user;
     const connectionRequests = await ConnectionRequest.find({
       $or: [
         { toUserId: user._id, status: "accept" },
@@ -158,21 +183,49 @@ router.get("/connections", userAuth, async (req, res) => {
       .populate("fromUserId", USER_SAFE_DATA)
       .populate("toUserId", USER_SAFE_DATA);
 
-    const data = connectionRequests.map((request) => {
-      if (request.fromUserId.equals(loggedInUser._id)) return request.toUserId;
-      return request.fromUserId;
-    });
+    const data = connectionRequests.map((request) =>
+      request.fromUserId.equals(user._id)
+        ? request.toUserId
+        : request.fromUserId
+    );
 
-    res.json({
-      message: "Connections fetched successfully",
-      data,
-    });
+    res.json({ message: "Connections fetched successfully", data });
   } catch (error) {
     console.error("Error:", error);
-    res.status(500).json({
-      message: "Error occurred",
-      error: error.message,
+    res.status(500).json({ message: "Error occurred", error: error.message });
+  }
+});
+
+// Fetches the feed of users
+router.get("/feed", userAuth, async (req, res) => {
+  const page = parseInt(req.query.page || 1, 10);
+  const limit = Math.min(parseInt(req.query.limit || 10, 10), 50);
+  const skip = (page - 1) * limit;
+
+  const { user } = req;
+  try {
+    const connectionRequests = await ConnectionRequest.find({
+      $or: [{ fromUserId: user._id }, { toUserId: user._id }],
     });
+
+    const hideUsersFromFeed = new Set();
+    connectionRequests.forEach((request) => {
+      hideUsersFromFeed.add(String(request.fromUserId));
+      hideUsersFromFeed.add(String(request.toUserId));
+    });
+
+    const users = await User.find({
+      _id: { $nin: Array.from(hideUsersFromFeed) },
+      _id: { $ne: user._id },
+    })
+      .select(USER_SAFE_DATA)
+      .skip(skip)
+      .limit(limit);
+
+    res.json({ message: "Feed fetched", users });
+  } catch (error) {
+    console.error("Error:", error);
+    res.status(500).json({ message: "Error occurred", error: error.message });
   }
 });
 
